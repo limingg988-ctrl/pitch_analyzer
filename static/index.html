@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pitch Analyzer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #18212f;
+      --muted: #637083;
+      --line: #d9e0ea;
+      --accent: #0a7c72;
+      --danger: #b42318;
+      --warn: #b45309;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    main {
+      width: min(1120px, calc(100% - 24px));
+      margin: 0 auto;
+      padding: 16px 0 28px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+    .status {
+      min-width: 112px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      text-align: center;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .surface {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .video-wrap {
+      position: relative;
+      background: #111827;
+      border-radius: 6px;
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+    }
+    video, canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    canvas { pointer-events: none; }
+    .controls {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    input, select {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--ink);
+      background: #fff;
+      font: inherit;
+    }
+    button {
+      min-height: 40px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 8px 11px;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+      color: #fff;
+      background: var(--accent);
+    }
+    button.secondary {
+      color: var(--ink);
+      background: #fff;
+      border-color: var(--line);
+    }
+    button.danger { background: var(--danger); }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+    .meter {
+      height: 10px;
+      border-radius: 999px;
+      background: #e8edf4;
+      overflow: hidden;
+    }
+    .meter > div {
+      width: 0%;
+      height: 100%;
+      background: var(--accent);
+      transition: width 120ms linear;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .results {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 78px;
+      background: #fbfcfe;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    .log {
+      margin-top: 10px;
+      min-height: 96px;
+      max-height: 180px;
+      overflow: auto;
+      padding: 9px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #fbfcfe;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+    .warn { color: var(--warn); }
+    @media (max-width: 820px) {
+      main { width: min(100% - 16px, 720px); padding-top: 10px; }
+      .layout { grid-template-columns: 1fr; }
+      .row, .results { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+      h1 { font-size: 21px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Pitch Analyzer</h1>
+      <div id="status" class="status">待機中</div>
+    </header>
+
+    <div class="layout">
+      <section class="surface">
+        <div class="video-wrap">
+          <video id="preview" playsinline muted autoplay></video>
+          <canvas id="motionCanvas" style="display:none"></canvas>
+        </div>
+        <div class="controls">
+          <div class="row">
+            <button id="prepare">準備</button>
+            <button id="manualRecord" class="secondary" disabled>手動録画</button>
+          </div>
+          <div class="row">
+            <label>手首速度閾値
+              <input id="sensitivity" type="range" min="120" max="900" value="420">
+            </label>
+            <div class="hint">準備後、手首が閾値以上で振られたら録画を開始します。歩行や小さな手振りでは反応しにくい値にしています。</div>
+          </div>
+          <div class="meter"><div id="motionMeter"></div></div>
+        </div>
+      </section>
+
+      <aside class="surface">
+        <div class="controls">
+          <div class="row">
+            <label>投球距離
+              <select id="preset">
+                <option value="18.44">硬式・軟式野球 18.44m</option>
+                <option value="16">中学野球 16.00m</option>
+                <option value="14">小学生野球 14.00m</option>
+                <option value="13.11">ソフトボール（女子）13.11m</option>
+                <option value="10">キャッチボール近 10m</option>
+                <option value="15">キャッチボール中 15m</option>
+                <option value="20">キャッチボール遠 20m</option>
+                <option value="custom">カスタム</option>
+              </select>
+            </label>
+            <label>距離 m
+              <input id="distance" type="number" min="0.1" step="0.01" value="18.44" disabled>
+            </label>
+          </div>
+          <div class="row">
+            <label>FPS 上書き
+              <input id="fps" type="number" min="1" step="1" placeholder="空なら動画から取得">
+            </label>
+            <label>cm/px
+              <input id="cmPerPx" type="number" min="0.0001" step="0.0001" placeholder="任意">
+            </label>
+          </div>
+          <input id="fileInput" type="file" accept="video/*">
+          <button id="analyzeFile" class="secondary">ファイル解析</button>
+        </div>
+
+        <div class="results" style="margin-top:12px">
+          <div class="metric"><span>平均球速</span><strong id="speed">--</strong></div>
+          <div class="metric"><span>リリース</span><strong id="release">--</strong></div>
+          <div class="metric"><span>縦変化</span><strong id="vertBreak">--</strong></div>
+          <div class="metric"><span>横変化</span><strong id="horizBreak">--</strong></div>
+        </div>
+        <div id="log" class="log">カメラを開始すると、自動録画の待機に入ります。</div>
+      </aside>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+
+  <script>
+    const preview = document.getElementById("preview");
+    const canvas = document.getElementById("motionCanvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const statusEl = document.getElementById("status");
+    const motionMeter = document.getElementById("motionMeter");
+    const logEl = document.getElementById("log");
+    const prepareBtn = document.getElementById("prepare");
+    const manualRecordBtn = document.getElementById("manualRecord");
+    const analyzeFileBtn = document.getElementById("analyzeFile");
+    const fileInput = document.getElementById("fileInput");
+    const preset = document.getElementById("preset");
+    const distance = document.getElementById("distance");
+    const fps = document.getElementById("fps");
+    const cmPerPx = document.getElementById("cmPerPx");
+    const sensitivity = document.getElementById("sensitivity");
+
+    let stream = null;
+    let recorder = null;
+    let camera = null;
+    let pose = null;
+    let chunks = [];
+    let recording = false;
+    let prepared = false;
+    let poseActive = false;
+    let lastWristSample = null;
+    let launchStreak = 0;
+    let quietFrames = 0;
+    let ballMissingFrames = 0;
+    let recordStartedAt = 0;
+    let autoTriggerDisabledUntil = 0;
+    let sceneLoopStarted = false;
+    let lastBallSeenAt = 0;
+
+    const POSE_VIDEO_SIZE = { width: 1280, height: 720 };
+    const LAUNCH_CONFIRM_FRAMES = 2;
+    const AUTO_TRIGGER_COOLDOWN_MS = 2000;
+    const STOP_QUIET_FRAMES = 12;
+    const STOP_MIN_ELAPSED_MS = 800;
+    const BALL_MISSING_STOP_FRAMES = 10;
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function log(text) {
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent = `[${time}] ${text}\n` + logEl.textContent;
+    }
+
+    function currentDistance() {
+      return Number(distance.value || preset.value || 18.44);
+    }
+
+    function formDataFor(blob) {
+      const fd = new FormData();
+      fd.append("video", blob, `pitch-${Date.now()}.webm`);
+      fd.append("distance_m", String(currentDistance()));
+      if (fps.value) fd.append("fps", fps.value);
+      if (cmPerPx.value) fd.append("cm_per_px", cmPerPx.value);
+      return fd;
+    }
+
+    function resetDetectionState() {
+      lastWristSample = null;
+      launchStreak = 0;
+      quietFrames = 0;
+      ballMissingFrames = 0;
+      lastBallSeenAt = 0;
+      motionMeter.style.width = "0%";
+    }
+
+    function showResult(data) {
+      document.getElementById("speed").textContent =
+        data.speed_kmh == null ? "--" : `${data.speed_kmh.toFixed(1)} km/h`;
+      document.getElementById("release").textContent =
+        data.release_found ? `${data.release_frame} f` : "未特定";
+
+      const brk = data.break || {};
+      document.getElementById("vertBreak").textContent =
+        brk.max_vert_cm != null ? `${brk.max_vert_cm.toFixed(1)} cm` : "--";
+      document.getElementById("horizBreak").textContent =
+        brk.max_horiz_cm != null ? `${brk.max_horiz_cm.toFixed(1)} cm` : "--";
+
+      const scaleText = brk.scale_source === "manual" ? "cm/px入力値" :
+        brk.scale_source === "ball_estimate" ? "ボール径からcm推定" : "cm換算なし";
+      const gravityText = brk.gravity_fixed ? `重力固定あり・${scaleText}` : `重力固定なし・${scaleText}`;
+      log(`解析完了: 検出=${data.detections}, 飛行=${data.flight_frames}f, ${gravityText}`);
+    }
+
+    async function analyzeBlob(blob) {
+      setStatus("解析中");
+      log("動画をアップロードして解析します。");
+      const res = await fetch("/analyze", { method: "POST", body: formDataFor(blob) });
+      if (!res.ok) {
+        const message = await res.text();
+        throw new Error(message);
+      }
+      showResult(await res.json());
+      setStatus("完了");
+    }
+
+    function ensureSceneLoop() {
+      if (sceneLoopStarted) return;
+      sceneLoopStarted = true;
+      requestAnimationFrame(trackScene);
+    }
+
+    async function prepareDetection() {
+      if (prepared) return;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("このブラウザはカメラに対応していません。");
+      }
+      if (typeof Pose !== "function" || typeof Camera !== "function") {
+        throw new Error("MediaPipe の読み込みに失敗しました。");
+      }
+
+      setStatus("準備中");
+      log("カメラと手首検出を準備しています。");
+
+      pose = new Pose({
+        locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+      });
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      pose.onResults(onPoseResults);
+
+      camera = new Camera(preview, {
+        onFrame: async () => {
+          if (poseActive) {
+            await pose.send({ image: preview });
+          }
+        },
+        width: POSE_VIDEO_SIZE.width,
+        height: POSE_VIDEO_SIZE.height,
+        facingMode: "environment",
+      });
+
+      await camera.start();
+      stream = preview.srcObject;
+      prepared = true;
+      poseActive = true;
+      manualRecordBtn.disabled = false;
+      prepareBtn.disabled = true;
+      setStatus("待機中");
+      log("準備完了。手首速度を監視します。");
+      ensureSceneLoop();
+    }
+
+    function wristPx(landmark) {
+      if (!landmark) return null;
+      return {
+        x: landmark.x * (preview.videoWidth || POSE_VIDEO_SIZE.width),
+        y: landmark.y * (preview.videoHeight || POSE_VIDEO_SIZE.height),
+        visible: typeof landmark.visibility === "number" ? landmark.visibility : 1,
+      };
+    }
+
+    function wristSpeedPxPerSec(cur, prev, dt) {
+      if (!cur || !prev || dt <= 0) return 0;
+      const dx = cur.x - prev.x;
+      const dy = cur.y - prev.y;
+      return Math.hypot(dx, dy) / dt;
+    }
+
+    function onPoseResults(results) {
+      if (!prepared) return;
+
+      const now = performance.now();
+      const dt = lastWristSample ? Math.max(0.016, (now - lastWristSample.ts) / 1000) : 0;
+      const left = wristPx(results.poseLandmarks?.[19]);
+      const right = wristPx(results.poseLandmarks?.[20]);
+      const maxVisibility = Math.max(left?.visible || 0, right?.visible || 0);
+
+      let speed = 0;
+      if (lastWristSample) {
+        speed = Math.max(
+          wristSpeedPxPerSec(left, lastWristSample.left, dt),
+          wristSpeedPxPerSec(right, lastWristSample.right, dt),
+        );
+      }
+
+      lastWristSample = { left, right, ts: now };
+
+      const threshold = Number(sensitivity.value);
+      const normalized = Math.min(100, Math.round((speed / threshold) * 100));
+      motionMeter.style.width = `${normalized}%`;
+
+      if (!recording) {
+        if (now < autoTriggerDisabledUntil) {
+          launchStreak = 0;
+          return;
+        }
+
+        if (maxVisibility > 0.35 && speed >= threshold) {
+          launchStreak += 1;
+          if (launchStreak >= LAUNCH_CONFIRM_FRAMES) {
+            startRecording();
+          }
+        } else {
+          launchStreak = 0;
+        }
+      } else {
+        const elapsed = now - recordStartedAt;
+        if (speed < threshold * 0.35) quietFrames += 1;
+        else quietFrames = 0;
+
+        if (results.poseLandmarks) {
+          const handActive = speed >= threshold * 0.25;
+          if (!handActive && elapsed > STOP_MIN_ELAPSED_MS) {
+            ballMissingFrames += 1;
+          } else if (handActive) {
+            ballMissingFrames = 0;
+          }
+        }
+
+        if ((elapsed > STOP_MIN_ELAPSED_MS && quietFrames >= STOP_QUIET_FRAMES) ||
+            ballMissingFrames >= BALL_MISSING_STOP_FRAMES) {
+          stopRecording();
+        }
+      }
+    }
+
+    function detectBallCandidate(imageData, width, height) {
+      const gray = new Uint8Array(width * height);
+      let best = null;
+      let bestScore = 0;
+
+      for (let i = 0, p = 0; p < gray.length; i += 4, p++) {
+        const r = imageData[i];
+        const g = imageData[i + 1];
+        const b = imageData[i + 2];
+        const luma = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+        const sat = Math.max(r, g, b) - Math.min(r, g, b);
+        gray[p] = luma > 205 && sat < 90 ? 1 : 0;
+      }
+
+      const visited = new Uint8Array(gray.length);
+      const stack = [];
+
+      for (let idx = 0; idx < gray.length; idx++) {
+        if (!gray[idx] || visited[idx]) continue;
+
+        let minX = width, minY = height, maxX = 0, maxY = 0, count = 0;
+        stack.length = 0;
+        stack.push(idx);
+        visited[idx] = 1;
+
+        while (stack.length) {
+          const cur = stack.pop();
+          const x = cur % width;
+          const y = (cur / width) | 0;
+          count += 1;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+
+          const neighbors = [
+            cur - 1, cur + 1,
+            cur - width, cur + width,
+            cur - width - 1, cur - width + 1,
+            cur + width - 1, cur + width + 1,
+          ];
+          for (const n of neighbors) {
+            if (n < 0 || n >= gray.length || visited[n] || !gray[n]) continue;
+            visited[n] = 1;
+            stack.push(n);
+          }
+        }
+
+        const boxW = maxX - minX + 1;
+        const boxH = maxY - minY + 1;
+        const area = count;
+        const boxArea = boxW * boxH;
+        const compactness = boxArea > 0 ? area / boxArea : 0;
+        const circularish = boxW > 1 && boxH > 1 && boxW / boxH < 3.2 && boxH / boxW < 3.2;
+
+        if (area >= 4 && area <= 220 && compactness >= 0.25 && circularish) {
+          const score = area * compactness;
+          if (score > bestScore) {
+            bestScore = score;
+            best = {
+              x: (minX + maxX) / 2,
+              y: (minY + maxY) / 2,
+              area,
+            };
+          }
+        }
+      }
+
+      return best;
+    }
+
+    function startRecording() {
+      if (!stream || recording) return;
+      chunks = [];
+      const options = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+        ? { mimeType: "video/webm;codecs=vp9" }
+        : {};
+      recorder = new MediaRecorder(stream, options);
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+        recording = false;
+        autoTriggerDisabledUntil = performance.now() + AUTO_TRIGGER_COOLDOWN_MS;
+        manualRecordBtn.textContent = "手動録画";
+        ballMissingFrames = 0;
+        quietFrames = 0;
+        setStatus("送信中");
+        try {
+          await analyzeBlob(blob);
+        } catch (err) {
+          setStatus("エラー");
+          log(`解析失敗: ${err.message}`);
+        }
+      };
+      recorder.start();
+      recording = true;
+      recordStartedAt = performance.now();
+      manualRecordBtn.textContent = "停止";
+      setStatus("録画中");
+      log("録画を開始しました。");
+    }
+
+    function stopRecording() {
+      if (recorder && recording && recorder.state !== "inactive") {
+        recorder.stop();
+        log("録画を停止しました。");
+      }
+    }
+
+    function trackScene() {
+      if (!prepared) return;
+
+      const width = 160;
+      const height = 90;
+      if (preview.videoWidth > 0 && preview.videoHeight > 0) {
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(preview, 0, 0, width, height);
+        const image = ctx.getImageData(0, 0, width, height).data;
+        const ball = detectBallCandidate(image, width, height);
+        if (ball) {
+          lastBallSeenAt = performance.now();
+          ballMissingFrames = 0;
+        } else if (recording) {
+          const elapsed = performance.now() - recordStartedAt;
+          if (elapsed > STOP_MIN_ELAPSED_MS) {
+            ballMissingFrames += 1;
+          }
+        }
+      }
+
+      requestAnimationFrame(trackScene);
+    }
+
+    preset.addEventListener("change", () => {
+      if (preset.value === "custom") {
+        distance.disabled = false;
+        distance.focus();
+      } else {
+        distance.value = preset.value;
+        distance.disabled = true;
+      }
+    });
+
+    prepareBtn.addEventListener("click", () => {
+      prepareDetection().catch(err => {
+        setStatus("エラー");
+        log(`準備失敗: ${err.message}`);
+      });
+    });
+
+    manualRecordBtn.addEventListener("click", () => {
+      if (recording) stopRecording();
+      else startRecording();
+    });
+
+    analyzeFileBtn.addEventListener("click", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        log("解析する動画ファイルを選択してください。");
+        return;
+      }
+      try {
+        await analyzeBlob(file);
+      } catch (err) {
+        setStatus("エラー");
+        log(`解析失敗: ${err.message}`);
+      }
+    });
+  </script>
+</body>
+</html>
