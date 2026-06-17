@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+certs/
+outputs/
+.venv/
+venv/
+myenv/
