@@ -247,6 +247,8 @@
           </div>
           <input id="fileInput" type="file" accept="video/*">
           <button id="analyzeFile" class="secondary">ファイル解析</button>
+          <button id="debugAnalyze" class="secondary" disabled>デバッグ動画をダウンロード</button>
+          <a id="debugDownload" class="hint" href="/debug_video" download style="display:none">デバッグ動画を保存</a>
         </div>
 
         <div class="results" style="margin-top:12px">
@@ -274,6 +276,8 @@
     const prepareBtn = document.getElementById("prepare");
     const manualRecordBtn = document.getElementById("manualRecord");
     const analyzeFileBtn = document.getElementById("analyzeFile");
+    const debugAnalyzeBtn = document.getElementById("debugAnalyze");
+    const debugDownload = document.getElementById("debugDownload");
     const fileInput = document.getElementById("fileInput");
     const preset = document.getElementById("preset");
     const distance = document.getElementById("distance");
@@ -297,6 +301,7 @@
     let autoTriggerDisabledUntil = 0;
     let sceneLoopStarted = false;
     let lastBallSeenAt = 0;
+    let lastAnalyzedBlob = null;
 
     const POSE_VIDEO_SIZE = { width: 1280, height: 720 };
     const LAUNCH_CONFIRM_FRAMES = 2;
@@ -354,16 +359,32 @@
       log(`解析完了: 検出=${data.detections}, 飛行=${data.flight_frames}f, ${gravityText}`);
     }
 
-    async function analyzeBlob(blob) {
-      setStatus("解析中");
-      log("動画をアップロードして解析します。");
-      const res = await fetch("/analyze", { method: "POST", body: formDataFor(blob) });
-      if (!res.ok) {
-        const message = await res.text();
-        throw new Error(message);
+    async function analyzeBlob(blob, debug = false) {
+      lastAnalyzedBlob = blob;
+      debugAnalyzeBtn.disabled = true;
+      if (!debug) {
+        debugDownload.style.display = "none";
       }
-      showResult(await res.json());
-      setStatus("完了");
+      try {
+        setStatus("解析中");
+        log(debug ? "デバッグ動画を書き出します。" : "動画をアップロードして解析します。");
+        const url = debug ? "/analyze?debug=true" : "/analyze";
+        const res = await fetch(url, { method: "POST", body: formDataFor(blob) });
+        if (!res.ok) {
+          const message = await res.text();
+          throw new Error(message);
+        }
+        const data = await res.json();
+        showResult(data);
+        if (debug && data.debug_video) {
+          debugDownload.href = `${data.debug_video}?t=${Date.now()}`;
+          debugDownload.style.display = "inline";
+          log("デバッグ動画を書き出しました。");
+        }
+        setStatus("完了");
+      } finally {
+        debugAnalyzeBtn.disabled = !lastAnalyzedBlob;
+      }
     }
 
     function ensureSceneLoop() {
@@ -661,6 +682,20 @@
       } catch (err) {
         setStatus("エラー");
         log(`解析失敗: ${err.message}`);
+      }
+    });
+
+    debugAnalyzeBtn.addEventListener("click", async () => {
+      if (!lastAnalyzedBlob) {
+        log("先に動画を解析してください。");
+        return;
+      }
+      try {
+        await analyzeBlob(lastAnalyzedBlob, true);
+      } catch (err) {
+        setStatus("エラー");
+        debugAnalyzeBtn.disabled = !lastAnalyzedBlob;
+        log(`デバッグ動画の作成失敗: ${err.message}`);
       }
     });
   </script>

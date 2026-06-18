@@ -11,7 +11,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from scipy.optimize import curve_fit
@@ -21,6 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 OUTPUT_DIR = BASE_DIR / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
+DEBUG_VIDEO_PATH = Path("/tmp/debug_output.mp4")
 
 MIN_RADIUS = 5
 MAX_RADIUS = 60
@@ -48,6 +49,17 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/debug_video")
+def debug_video() -> FileResponse:
+    if not DEBUG_VIDEO_PATH.exists():
+        raise HTTPException(status_code=404, detail="デバッグ動画がまだ生成されていません。")
+    return FileResponse(
+        DEBUG_VIDEO_PATH,
+        media_type="video/mp4",
+        filename="debug_output.mp4",
+    )
 
 
 def detect_ball(frame: np.ndarray, fgmask: np.ndarray) -> tuple[int, int, float] | None:
@@ -192,6 +204,90 @@ def save_csv(trajectory: list[list[float]], path: Path) -> None:
         writer.writerows(trajectory)
 
 
+def create_video_writer(path: Path, fps: float, width: int, height: int) -> cv2.VideoWriter:
+    for codec in ("mp4v", "avc1"):
+        writer = cv2.VideoWriter(
+            str(path),
+            cv2.VideoWriter_fourcc(*codec),
+            fps,
+            (width, height),
+        )
+        if writer.isOpened():
+            return writer
+        writer.release()
+    raise HTTPException(status_code=500, detail="デバッグ動画の書き出しを開始できませんでした。")
+
+
+def draw_debug_text(frame: np.ndarray, frame_no: int, detections: int, cx: int | None) -> None:
+    text = f"frame={frame_no} detections={detections} x={cx if cx is not None else '--'}"
+    origin = (12, 28)
+    cv2.putText(frame, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(frame, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
+
+
+def write_debug_video(path: Path, output_path: Path, fps_override: float | None, release_frame: int | None) -> None:
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise HTTPException(status_code=400, detail="動画を開けませんでした。")
+
+    source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+    fps = fps_override if fps_override and fps_override > 0 else source_fps
+    if fps <= 0:
+        fps = 60.0
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    if width <= 0 or height <= 0:
+        cap.release()
+        raise HTTPException(status_code=400, detail="動画サイズを取得できませんでした。")
+
+    tmp_output = output_path.with_suffix(".tmp.mp4")
+    output_path.unlink(missing_ok=True)
+    tmp_output.unlink(missing_ok=True)
+    writer = create_video_writer(tmp_output, fps, width, height)
+    back_sub = cv2.createBackgroundSubtractorMOG2(
+        history=200,
+        varThreshold=50,
+        detectShadows=False,
+    )
+    trail: deque[tuple[int, int]] = deque(maxlen=30)
+    frame_no = 0
+    detections = 0
+    completed = False
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            fgmask = back_sub.apply(frame)
+            detected = detect_ball(frame, fgmask)
+            current_x: int | None = None
+            if detected:
+                cx, cy, radius = detected
+                current_x = cx
+                detections += 1
+                trail.append((cx, cy))
+                color = (0, 255, 255) if release_frame is not None and frame_no == release_frame else (0, 255, 0)
+                cv2.circle(frame, (cx, cy), int(round(radius)), color, 2)
+
+            if len(trail) >= 2:
+                cv2.polylines(frame, [np.array(trail, dtype=np.int32)], False, (0, 0, 255), 2)
+
+            draw_debug_text(frame, frame_no, detections, current_x)
+            writer.write(frame)
+            frame_no += 1
+        completed = True
+    finally:
+        writer.release()
+        cap.release()
+        if not completed:
+            tmp_output.unlink(missing_ok=True)
+
+    tmp_output.replace(output_path)
+
+
 def analyze_video(path: Path, fps_override: float | None, distance_m: float, cm_per_px: float | None) -> dict[str, Any]:
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -269,6 +365,7 @@ def analyze_video(path: Path, fps_override: float | None, distance_m: float, cm_
 @app.post("/analyze")
 async def analyze(
     video: UploadFile = File(...),
+    debug: bool = Query(False),
     distance_m: float = Form(18.44),
     fps: float | None = Form(None),
     cm_per_px: float | None = Form(None),
@@ -283,6 +380,9 @@ async def analyze(
 
     try:
         result = analyze_video(tmp_path, fps, distance_m, cm_per_px)
+        if debug:
+            write_debug_video(tmp_path, DEBUG_VIDEO_PATH, fps, result.get("release_frame"))
+            result["debug_video"] = "/debug_video"
     finally:
         tmp_path.unlink(missing_ok=True)
 
